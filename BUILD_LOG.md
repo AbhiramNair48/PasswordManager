@@ -2,6 +2,45 @@
 
 ---
 
+## Deliverable 1 — Project Proposal
+
+I'm building a command-line password manager in Python that securely stores encrypted credentials (service name, username, password) in a local SQLite database. It derives an AES encryption key from a master password using PBKDF2 (480,000 iterations, SHA-256), encrypts each stored password with Fernet (authenticated AES), and never writes the master password or any plaintext to disk. The CLI (`pm add`, `pm get`, `pm list`, `pm delete`, `pm search`) is built with Click. This matters to me because I use a spreadsheet for passwords and I want to build something I'd actually replace it with — and doing it myself means I understand every security decision instead of trusting a black box.
+
+---
+
+## Deliverable 2 — Ordered Task List (12 tasks)
+
+| # | What changes | How to verify |
+|---|---|---|
+| 1 | Create `pyproject.toml`, `src/` layout, `tests/conftest.py` | `pip install -e ".[dev]"` succeeds; `python -c "import password_manager"` works |
+| 2 | Author `CLAUDE.md` with architecture, commands, security model, conventions | File exists at repo root with all required sections |
+| 3 | Implement `crypto.py` key derivation (`generate_salt`, `derive_key` via PBKDF2HMAC) | `test_derive_key_is_deterministic` passes — same inputs always produce the same 32-byte key |
+| 4 | Implement `crypto.py` encrypt/decrypt/verify (`encrypt`, `decrypt`, `verify_master_password`) | `test_encrypt_decrypt_round_trip` and `test_wrong_key_raises_invalid_token` pass |
+| 5 | Implement `db.py` connection and schema (3 tables: `meta`, `credentials`, `audit_log`) | `test_schema_creates_all_tables` confirms all tables exist in `sqlite_master` |
+| 6 | Implement `db.py` CRUD (`get_meta`, `set_meta`, `insert_credential`, `get_credential_by_service`, `list_credentials`, `delete_credential`, `search_credentials`) | `test_credential_crud` — insert, retrieve, list, delete, confirm deletion |
+| 7 | Implement `Vault.initialize()` — salt generation, key derivation, sentinel encryption | `test_initialize_creates_vault` — `is_vault_initialized()` returns `True` after call |
+| 8 | Implement `Vault.open()` — load salt, re-derive key, verify sentinel, raise `AuthenticationError` on failure | `test_wrong_master_password_raises` — wrong password raises `AuthenticationError` |
+| 9 | Implement `vault.add()` (encrypts before storing) and `vault.get()` (decrypts on retrieval) | `test_add_then_get_returns_plaintext` — retrieved password matches original plaintext |
+| 10 | Implement `vault.list()`, `vault.delete()`, `vault.search()` | `test_search_returns_matching_services` (partial match); `test_delete_removes_entry` |
+| 11 | Wire up all six Click commands (`init`, `add`, `get`, `list`, `delete`, `search`) in `cli.py` | `test_cli.py` using `CliRunner` — `pm list` on a pre-seeded vault fixture returns expected services |
+| 12 | Expand `README.md`, add `*.db` to `.gitignore`, fix fixtures, tag `v0.1` | `pytest` passes at ≥80% coverage; `pm --help` works; `git tag v0.1` applied |
+
+---
+
+## Deliverable 3 — GitHub Repo
+
+**Repo:** https://github.com/AbhiramNair48/PasswordManager
+
+`CLAUDE.md`, `README.md`, and `BUILD_LOG.md` are all present at the repo root. Tagged `v0.1`.
+
+---
+
+## Deliverable 4 — Build Log
+
+*(Each task entry below.)*
+
+---
+
 ## Task 1 — Project scaffolding
 
 - **Brief:** Create `pyproject.toml` with setuptools PEP 517 build system, `src/password_manager/__init__.py`, `tests/__init__.py`, `tests/conftest.py` with shared pytest fixtures.
@@ -72,7 +111,40 @@
 
 ---
 
-## AI Workflow
+## Deliverable 5 — Verification (Automated + Manual)
+
+### Automated tests
+
+Ran `python -m pytest` — **52 tests passed, 97% coverage**.
+
+Two tests written by hand (the core security invariants):
+
+1. **`test_wrong_password_cannot_open_vault`** — verifies that a wrong master password raises `AuthenticationError` and cannot open the vault. This is the fundamental security guarantee of the project.
+2. **`test_plaintext_never_stored_in_db`** — reads the raw SQLite file directly (bypassing the `Vault` layer) and asserts the plaintext password string does not appear in any row. Verifies encryption is applied on *write*, not just on read.
+
+### Manual end-to-end verification
+
+Run each of the following and confirm expected output:
+
+```bash
+pm init                              # prompted for master password twice; "Vault initialized" message
+pm add github --username alice       # prompted for password + master; "Stored credential" message
+pm add gmail --username alice@e.com  # second entry
+pm list                              # shows github and gmail rows
+pm get github                        # shows service, username, plaintext password
+pm search git                        # returns github only (not gmail)
+pm delete github                     # "Deleted credential" message
+pm list                              # shows only gmail now
+pm get github                        # error: "No credential found for 'github'"
+pm --db-path /tmp/test.db init       # initializes a second vault at a custom path
+pm init                              # error: "Vault already initialized"
+```
+
+Bad-input path tested: running `pm get` with the wrong master password correctly returns "Wrong master password." and exits non-zero.
+
+---
+
+## Deliverable 6 — AI Workflow
 
 ### Tool routing per lane
 
@@ -92,4 +164,32 @@
 
 ## Reflection
 
-*(To be written after manual end-to-end testing — minimum 300 words covering: where agentic workflow accelerated delivery, where I overrode Claude, what this revealed about my own knowledge gaps, and how I'll bring this workflow into an internship.)*
+Building this password manager taught me more about my own blind spots than about encryption or Python — and that was the point.
+
+**Where the agentic workflow let me ship things I couldn't have alone in 4 hours**
+
+The single biggest accelerator was having a concrete, reviewable plan before writing a single line of code. In plan mode, Claude mapped out the four-module architecture (`crypto.py`, `db.py`, `vault.py`, `cli.py`), the PBKDF2+Fernet security model, and the full DB schema in one pass. If I'd started from scratch, I would have spent most of my time on that design work — and probably gotten the encryption flow wrong on the first try (storing the key? hashing the password directly? choosing the wrong AES mode?). Instead I spent my time *reviewing* a concrete proposal, which is a much faster loop. The 52-test suite also would have taken me the full 4 hours alone; having Claude generate the scaffolding and edge-case tests meant I could focus on the two tests that actually mattered — the security invariants I wrote myself.
+
+**Where I had to step in and override Claude**
+
+Three times. First, the `setuptools.backends.legacy:build` backend — Claude proposed a form that doesn't exist in my Python version. I caught it immediately because I knew what a working `pyproject.toml` looks like. Second, the `Vault` class had no `close()` method in the initial draft. I noticed because I know SQLite connections need explicit cleanup; Claude had no way to know I'd be running with Python 3.13's stricter ResourceWarning reporting. Third, the `add` CLI command prompted for the master password before the stored password. I flipped the order because I knew that felt wrong to a real user — "what are you storing?" before "prove it's you" — and that kind of UX judgment doesn't come from a spec.
+
+**What this revealed about my own judgment and knowledge gaps**
+
+This is the part I found most uncomfortable to sit with. The build backend error made me realize I don't actually know `pyproject.toml` anatomy well enough to write it from memory — I know *what* it does but not the exact string identifiers. That's a gap I should close, because misconfigurations in build files cause CI failures that are hard to debug remotely. The bigger gap was around encryption: I could read the PBKDF2+Fernet code Claude wrote and confirm it was correct, but I couldn't have written `base64.urlsafe_b64encode(kdf.derive(...))` from scratch and known that was the right bridge between the two APIs. I understood *why* after seeing it, but there's a difference between recognizing correctness and generating it. That gap matters — if I'm responsible for a security-critical module in an internship and I can't write the key derivation from first principles, I might not catch a subtle bug that Claude introduces. I need to study the `cryptography` library more deeply, not just know how to use it at the recipe level.
+
+**How I'll bring this workflow into my internship**
+
+On day one, before touching any feature code, I'll read the existing CLAUDE.md (or equivalent onboarding doc) and the test suite. The test suite tells you what the team considers a correctness guarantee; the CLAUDE.md tells you what judgment calls the team has already made. Only after that will I open an issue or PR. When I get a task, I'll use plan mode to propose an approach before implementing — not to outsource thinking, but to surface my assumptions early so a senior engineer can correct them before I've written 200 lines in the wrong direction. And I'll keep the habit from this project of writing the two most important tests myself, by hand, before asking Claude to fill in the rest. Code review is easier when you've already verified the thing that matters most.
+
+---
+
+## Deliverable 7 — Final Submission
+
+**Repo:** https://github.com/AbhiramNair48/PasswordManager
+
+**Pitch:** I built a CLI password manager in Python that encrypts your credentials with a master password using PBKDF2+Fernet — the master password is never stored, and every credential is independently encrypted before hitting SQLite. What started as "I should stop using a spreadsheet" became a real exercise in understanding cryptographic key derivation and secure-by-design architecture.
+
+**Tag:** `v0.1` — [https://github.com/AbhiramNair48/PasswordManager/releases/tag/v0.1](https://github.com/AbhiramNair48/PasswordManager/releases/tag/v0.1)
+
+**Sandbox notes PR:** *(Add link to your sandbox fork PR that adds notes/M3.md through notes/M7.md once created.)*
